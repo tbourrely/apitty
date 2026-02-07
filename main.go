@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -111,32 +111,34 @@ const (
 )
 
 type model struct {
-	focus            focusArea
-	methodIdx        int
-	urlInput         textinput.Model
-	headers          string
-	body             string
-	response         string
-	responseHeaders  string
-	statusCode       string
-	submitting       bool
-	loading          bool
-	methodOpen       bool // dropdown open state
-	width            int
-	height           int
-	viewport         viewport.Model
-	viewportReady    bool
-	fullscreen       bool // fullscreen response view
-	currentView      responseView // body or headers
-	showHelp         bool // show help manual
-	showHeadersForm  bool // show headers form
-	requestHeaders   []HeaderPair // request headers
-	headerKeyInput   textinput.Model
-	headerValInput   textinput.Model
-	headerSelectedIdx int  // which header is selected in the list
-	headerFormMode   headerFormMode
-	headerFocusField int // 0 = key, 1 = value
-	headerIsEditing  bool // true if editing existing, false if adding new
+	focus             focusArea
+	methodIdx         int
+	urlInput          textinput.Model
+	headers           string
+	body              string
+	response          string
+	responseHeaders   string
+	statusCode        string
+	submitting        bool
+	loading           bool
+	methodOpen        bool // dropdown open state
+	width             int
+	height            int
+	viewport          viewport.Model
+	viewportReady     bool
+	fullscreen        bool         // fullscreen response view
+	currentView       responseView // body or headers
+	showHelp          bool         // show help manual
+	showHeadersForm   bool         // show headers form
+	requestHeaders    []HeaderPair // request headers
+	headerKeyInput    textinput.Model
+	headerValInput    textinput.Model
+	headerSelectedIdx int // which header is selected in the list
+	headerFormMode    headerFormMode
+	headerFocusField  int  // 0 = key, 1 = value
+	headerIsEditing   bool // true if editing existing, false if adding new
+	showCurlImport    bool // show curl import modal
+	curlInput         textinput.Model
 }
 
 type HeaderPair struct {
@@ -160,6 +162,11 @@ func initialModel() model {
 	headerVal.CharLimit = 200
 	headerVal.Width = 50
 
+	curlInput := textinput.New()
+	curlInput.Placeholder = "Paste curl command here..."
+	curlInput.CharLimit = 2000
+	curlInput.Width = 80
+
 	vp := viewport.New(0, 0)
 	vp.KeyMap = viewport.KeyMap{} // Disable default keybindings
 
@@ -178,6 +185,7 @@ func initialModel() model {
 		headerSelectedIdx: 0,
 		headerFormMode:    headerModeList,
 		headerFocusField:  0,
+		curlInput:         curlInput,
 	}
 }
 
@@ -200,7 +208,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		
+
 		// Update viewport size
 		if !m.viewportReady {
 			m.viewport = viewport.New(m.width-10, m.height-14)
@@ -209,7 +217,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.Width = m.width - 10
 			m.viewport.Height = m.height - 14
 		}
-		
+
 		// Update text input width
 		m.urlInput.Width = m.width - 26
 		return m, nil
@@ -258,6 +266,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// If headers form is open, handle it separately
 		if m.showHeadersForm {
 			return m.updateHeadersForm(msg)
+		}
+
+		// If curl import is open, handle it separately
+		if m.showCurlImport {
+			return m.updateCurlImport(msg)
 		}
 
 		// If URL is focused, let text input handle most keys
@@ -340,6 +353,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			// Toggle help manual
 			m.showHelp = !m.showHelp
+			return m, nil
+
+		case "i":
+			// Open curl import modal (only when not in URL input)
+			if m.focus != focusURL && !m.loading {
+				m.showCurlImport = true
+				m.curlInput.SetValue("")
+				m.curlInput.Focus()
+				return m, textinput.Blink
+			}
 			return m, nil
 
 		case "h":
@@ -439,7 +462,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport, cmd = m.viewport.Update(msg)
 		cmds = append(cmds, cmd)
 	}
-	
+
 	return m, tea.Batch(cmds...)
 }
 
@@ -459,6 +482,11 @@ func (m model) View() string {
 	// If showing help manual
 	if m.showHelp {
 		return m.renderHelp()
+	}
+
+	// If showing curl import modal
+	if m.showCurlImport {
+		return m.renderCurlImport()
 	}
 
 	// If showing headers form
@@ -604,6 +632,8 @@ GLOBAL KEYBINDINGS
   q         Quit the application
   ctrl+c    Quit the application
   ctrl+s    Send HTTP request (from anywhere)
+  h         Open headers form (add/edit request headers)
+  i         Import from cURL command
 
 NAVIGATION
   tab       Cycle forward through fields (Method → URL → Response)
@@ -672,13 +702,13 @@ func sendRequestCmd(method, url string, headers []HeaderPair, body string) tea.C
 			return responseMsg{resp: "", headers: "", status: "", err: err}
 		}
 		defer resp.Body.Close()
-		
+
 		// Build headers string
 		var headersBuilder strings.Builder
 		for k, v := range resp.Header {
 			headersBuilder.WriteString(fmt.Sprintf("%s: %s\n", k, strings.Join(v, ", ")))
 		}
-		
+
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return responseMsg{resp: "", headers: "", status: "", err: err}
@@ -711,17 +741,17 @@ func colorizeJSON(jsonStr string) string {
 	inString := false
 	inEscape := false
 	isKey := false
-	
+
 	keyColor := lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
 	stringColor := lipgloss.NewStyle().Foreground(lipgloss.Color("#04B575"))
 	numberColor := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500"))
 	boolNullColor := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
 	bracketColor := lipgloss.NewStyle().Foreground(lipgloss.Color("#00D9FF"))
-	
+
 	i := 0
 	for i < len(jsonStr) {
 		ch := jsonStr[i]
-		
+
 		if inString {
 			if inEscape {
 				currentString.WriteByte(ch)
@@ -745,7 +775,7 @@ func colorizeJSON(jsonStr string) string {
 			i++
 			continue
 		}
-		
+
 		switch ch {
 		case '"':
 			// Detect if this is a key or a value
@@ -767,13 +797,13 @@ func colorizeJSON(jsonStr string) string {
 					isKey = true
 				}
 			}
-			
+
 			currentString.WriteByte('"')
 			inString = true
-			
+
 		case '{', '}', '[', ']':
 			result.WriteString(bracketColor.Render(string(ch)))
-			
+
 		case 't', 'f', 'n':
 			// Check for true, false, null
 			if i+4 <= len(jsonStr) && jsonStr[i:i+4] == "true" {
@@ -788,7 +818,7 @@ func colorizeJSON(jsonStr string) string {
 			} else {
 				result.WriteByte(ch)
 			}
-			
+
 		case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 			// Number
 			start := i
@@ -800,13 +830,13 @@ func colorizeJSON(jsonStr string) string {
 			}
 			result.WriteString(numberColor.Render(jsonStr[start:i]))
 			i--
-			
+
 		default:
 			result.WriteByte(ch)
 		}
 		i++
 	}
-	
+
 	return result.String()
 }
 
@@ -815,33 +845,33 @@ func wrapText(text string, width int) string {
 	if width <= 0 {
 		return text
 	}
-	
+
 	var result strings.Builder
 	lines := strings.Split(text, "\n")
-	
+
 	for _, line := range lines {
 		// Handle ANSI color codes - strip them for length calculation
 		visibleLen := visibleLength(line)
-		
+
 		if visibleLen <= width {
 			result.WriteString(line)
 			result.WriteByte('\n')
 			continue
 		}
-		
+
 		// Wrap long lines
 		currentPos := 0
 		for currentPos < len(line) {
 			// Find how many characters fit in width
 			chunkEnd := findChunkEnd(line, currentPos, width)
-			
+
 			if chunkEnd <= currentPos {
 				break
 			}
-			
+
 			// Extract chunk
 			chunk := line[currentPos:chunkEnd]
-			
+
 			// Try to break at a good position (space, comma, etc.)
 			if chunkEnd < len(line) {
 				// Look back for a good break point
@@ -853,10 +883,10 @@ func wrapText(text string, width int) string {
 					}
 				}
 			}
-			
+
 			result.WriteString(chunk)
 			result.WriteByte('\n')
-			
+
 			// Skip leading spaces on next line
 			currentPos = chunkEnd
 			for currentPos < len(line) && line[currentPos] == ' ' {
@@ -864,7 +894,7 @@ func wrapText(text string, width int) string {
 			}
 		}
 	}
-	
+
 	return result.String()
 }
 
@@ -872,23 +902,23 @@ func wrapText(text string, width int) string {
 func visibleLength(s string) int {
 	length := 0
 	inAnsi := false
-	
+
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\x1b' {
 			inAnsi = true
 			continue
 		}
-		
+
 		if inAnsi {
 			if s[i] == 'm' {
 				inAnsi = false
 			}
 			continue
 		}
-		
+
 		length++
 	}
-	
+
 	return length
 }
 
@@ -897,14 +927,14 @@ func findChunkEnd(s string, start, width int) int {
 	visibleCount := 0
 	pos := start
 	inAnsi := false
-	
+
 	for pos < len(s) {
 		if s[pos] == '\x1b' {
 			inAnsi = true
 			pos++
 			continue
 		}
-		
+
 		if inAnsi {
 			if s[pos] == 'm' {
 				inAnsi = false
@@ -912,15 +942,15 @@ func findChunkEnd(s string, start, width int) int {
 			pos++
 			continue
 		}
-		
+
 		if visibleCount >= width {
 			return pos
 		}
-		
+
 		visibleCount++
 		pos++
 	}
-	
+
 	return pos
 }
 
@@ -974,228 +1004,392 @@ func main() {
 	}
 }
 
-
 func (m model) updateHeadersForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-var cmd tea.Cmd
+	var cmd tea.Cmd
 
-// Handle mode-specific keys
-if m.headerFormMode == headerModeList {
-// List mode - navigate and manage headers
-switch msg.String() {
-case "esc", "ctrl+c", "q":
-m.showHeadersForm = false
-return m, nil
+	// Handle mode-specific keys
+	if m.headerFormMode == headerModeList {
+		// List mode - navigate and manage headers
+		switch msg.String() {
+		case "esc", "ctrl+c", "q":
+			m.showHeadersForm = false
+			return m, nil
 
-case "a", "n":
-// Add new header
-m.headerFormMode = headerModeEdit
-m.headerFocusField = 0
-m.headerIsEditing = false
-m.headerKeyInput.SetValue("")
-m.headerValInput.SetValue("")
-m.headerKeyInput.Focus()
-m.headerValInput.Blur()
-return m, textinput.Blink
+		case "a", "n":
+			// Add new header
+			m.headerFormMode = headerModeEdit
+			m.headerFocusField = 0
+			m.headerIsEditing = false
+			m.headerKeyInput.SetValue("")
+			m.headerValInput.SetValue("")
+			m.headerKeyInput.Focus()
+			m.headerValInput.Blur()
+			return m, textinput.Blink
 
-case "j", "down":
-if len(m.requestHeaders) > 0 {
-m.headerSelectedIdx++
-if m.headerSelectedIdx >= len(m.requestHeaders) {
-m.headerSelectedIdx = 0
-}
-}
-return m, nil
+		case "j", "down":
+			if len(m.requestHeaders) > 0 {
+				m.headerSelectedIdx++
+				if m.headerSelectedIdx >= len(m.requestHeaders) {
+					m.headerSelectedIdx = 0
+				}
+			}
+			return m, nil
 
-case "k", "up":
-if len(m.requestHeaders) > 0 {
-m.headerSelectedIdx--
-if m.headerSelectedIdx < 0 {
-m.headerSelectedIdx = len(m.requestHeaders) - 1
-}
-}
-return m, nil
+		case "k", "up":
+			if len(m.requestHeaders) > 0 {
+				m.headerSelectedIdx--
+				if m.headerSelectedIdx < 0 {
+					m.headerSelectedIdx = len(m.requestHeaders) - 1
+				}
+			}
+			return m, nil
 
-case "d", "x", "backspace", "delete":
-// Delete selected header
-if len(m.requestHeaders) > 0 && m.headerSelectedIdx >= 0 && m.headerSelectedIdx < len(m.requestHeaders) {
-m.requestHeaders = append(m.requestHeaders[:m.headerSelectedIdx], m.requestHeaders[m.headerSelectedIdx+1:]...)
-if m.headerSelectedIdx >= len(m.requestHeaders) && len(m.requestHeaders) > 0 {
-m.headerSelectedIdx = len(m.requestHeaders) - 1
-}
-if len(m.requestHeaders) == 0 {
-m.headerSelectedIdx = 0
-}
-}
-return m, nil
+		case "d", "x", "backspace", "delete":
+			// Delete selected header
+			if len(m.requestHeaders) > 0 && m.headerSelectedIdx >= 0 && m.headerSelectedIdx < len(m.requestHeaders) {
+				m.requestHeaders = append(m.requestHeaders[:m.headerSelectedIdx], m.requestHeaders[m.headerSelectedIdx+1:]...)
+				if m.headerSelectedIdx >= len(m.requestHeaders) && len(m.requestHeaders) > 0 {
+					m.headerSelectedIdx = len(m.requestHeaders) - 1
+				}
+				if len(m.requestHeaders) == 0 {
+					m.headerSelectedIdx = 0
+				}
+			}
+			return m, nil
 
-case "e", "enter":
-// Edit selected header
-if len(m.requestHeaders) > 0 && m.headerSelectedIdx >= 0 && m.headerSelectedIdx < len(m.requestHeaders) {
-h := m.requestHeaders[m.headerSelectedIdx]
-m.headerFormMode = headerModeEdit
-m.headerFocusField = 0
-m.headerIsEditing = true
-m.headerKeyInput.SetValue(h.Key)
-m.headerValInput.SetValue(h.Value)
-m.headerKeyInput.Focus()
-m.headerValInput.Blur()
-return m, textinput.Blink
-}
-return m, nil
-}
-return m, nil
+		case "e", "enter":
+			// Edit selected header
+			if len(m.requestHeaders) > 0 && m.headerSelectedIdx >= 0 && m.headerSelectedIdx < len(m.requestHeaders) {
+				h := m.requestHeaders[m.headerSelectedIdx]
+				m.headerFormMode = headerModeEdit
+				m.headerFocusField = 0
+				m.headerIsEditing = true
+				m.headerKeyInput.SetValue(h.Key)
+				m.headerValInput.SetValue(h.Value)
+				m.headerKeyInput.Focus()
+				m.headerValInput.Blur()
+				return m, textinput.Blink
+			}
+			return m, nil
+		}
+		return m, nil
 
-} else {
-// Edit mode - editing a header
-switch msg.String() {
-case "esc":
-// Cancel edit and go back to list
-m.headerFormMode = headerModeList
-m.headerKeyInput.Blur()
-m.headerValInput.Blur()
-m.headerKeyInput.SetValue("")
-m.headerValInput.SetValue("")
-return m, nil
+	} else {
+		// Edit mode - editing a header
+		switch msg.String() {
+		case "esc":
+			// Cancel edit and go back to list
+			m.headerFormMode = headerModeList
+			m.headerKeyInput.Blur()
+			m.headerValInput.Blur()
+			m.headerKeyInput.SetValue("")
+			m.headerValInput.SetValue("")
+			return m, nil
 
-case "ctrl+c":
-// Close form entirely
-m.showHeadersForm = false
-m.headerKeyInput.Blur()
-m.headerValInput.Blur()
-return m, nil
+		case "ctrl+c":
+			// Close form entirely
+			m.showHeadersForm = false
+			m.headerKeyInput.Blur()
+			m.headerValInput.Blur()
+			return m, nil
 
-case "tab":
-// Switch between key and value
-if m.headerFocusField == 0 {
-m.headerFocusField = 1
-m.headerKeyInput.Blur()
-m.headerValInput.Focus()
-} else {
-m.headerFocusField = 0
-m.headerValInput.Blur()
-m.headerKeyInput.Focus()
-}
-return m, textinput.Blink
+		case "tab":
+			// Switch between key and value
+			if m.headerFocusField == 0 {
+				m.headerFocusField = 1
+				m.headerKeyInput.Blur()
+				m.headerValInput.Focus()
+			} else {
+				m.headerFocusField = 0
+				m.headerValInput.Blur()
+				m.headerKeyInput.Focus()
+			}
+			return m, textinput.Blink
 
-case "enter":
-// Save header
-key := strings.TrimSpace(m.headerKeyInput.Value())
-val := strings.TrimSpace(m.headerValInput.Value())
+		case "enter":
+			// Save header
+			key := strings.TrimSpace(m.headerKeyInput.Value())
+			val := strings.TrimSpace(m.headerValInput.Value())
 
-if key != "" {
-if m.headerIsEditing {
-// Update existing
-m.requestHeaders[m.headerSelectedIdx] = HeaderPair{Key: key, Value: val}
-} else {
-// Add new
-m.requestHeaders = append(m.requestHeaders, HeaderPair{Key: key, Value: val})
-}
-}
+			if key != "" {
+				if m.headerIsEditing {
+					// Update existing
+					m.requestHeaders[m.headerSelectedIdx] = HeaderPair{Key: key, Value: val}
+				} else {
+					// Add new
+					m.requestHeaders = append(m.requestHeaders, HeaderPair{Key: key, Value: val})
+				}
+			}
 
-// Go back to list mode
-m.headerFormMode = headerModeList
-m.headerIsEditing = false
-m.headerKeyInput.SetValue("")
-m.headerValInput.SetValue("")
-m.headerKeyInput.Blur()
-m.headerValInput.Blur()
-return m, nil
+			// Go back to list mode
+			m.headerFormMode = headerModeList
+			m.headerIsEditing = false
+			m.headerKeyInput.SetValue("")
+			m.headerValInput.SetValue("")
+			m.headerKeyInput.Blur()
+			m.headerValInput.Blur()
+			return m, nil
 
-default:
-// Pass through to text inputs
-if m.headerFocusField == 0 {
-m.headerKeyInput, cmd = m.headerKeyInput.Update(msg)
-} else {
-m.headerValInput, cmd = m.headerValInput.Update(msg)
-}
-return m, cmd
-}
-}
+		default:
+			// Pass through to text inputs
+			if m.headerFocusField == 0 {
+				m.headerKeyInput, cmd = m.headerKeyInput.Update(msg)
+			} else {
+				m.headerValInput, cmd = m.headerValInput.Update(msg)
+			}
+			return m, cmd
+		}
+	}
 }
 
 func (m model) renderHeadersForm() string {
-var content strings.Builder
+	var content strings.Builder
 
-content.WriteString(titleStyle.Render("Request Headers"))
-content.WriteString("\n\n")
+	content.WriteString(titleStyle.Render("Request Headers"))
+	content.WriteString("\n\n")
 
-// Show mode
-var modeStr string
-if m.headerFormMode == headerModeList {
-modeStr = labelStyle.Render("[ LIST MODE ]")
-} else {
-modeStr = labelStyle.Render("[ EDIT MODE ]")
+	// Show mode
+	var modeStr string
+	if m.headerFormMode == headerModeList {
+		modeStr = labelStyle.Render("[ LIST MODE ]")
+	} else {
+		modeStr = labelStyle.Render("[ EDIT MODE ]")
+	}
+	content.WriteString(modeStr)
+	content.WriteString("\n\n")
+
+	// Show existing headers in list mode
+	if m.headerFormMode == headerModeList {
+		if len(m.requestHeaders) > 0 {
+			content.WriteString(labelStyle.Render("Headers:"))
+			content.WriteString("\n")
+			for i, h := range m.requestHeaders {
+				prefix := "  "
+				lineStyle := lipgloss.NewStyle()
+				if i == m.headerSelectedIdx {
+					prefix = "➤ "
+					lineStyle = lipgloss.NewStyle().
+						Foreground(lipgloss.Color("#FF00FF")).
+						Bold(true)
+				}
+				headerLine := fmt.Sprintf("%s%d. %s: %s", prefix, i+1, h.Key, h.Value)
+				content.WriteString(lineStyle.Render(headerLine))
+				content.WriteString("\n")
+			}
+		} else {
+			content.WriteString(lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#626262")).
+				Italic(true).
+				Render("No headers yet. Press 'a' to add one."))
+		}
+		content.WriteString("\n\n")
+
+		// List mode instructions
+		instructions := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#626262")).
+			Render("j/k: navigate • a: add new • e/enter: edit • d/x: delete • esc/q: close")
+		content.WriteString(instructions)
+	} else {
+		// Edit mode - show input form
+		content.WriteString(labelStyle.Render("Edit Header:"))
+		content.WriteString("\n\n")
+
+		keyLabel := "Key:   "
+		if m.headerFocusField == 0 {
+			keyLabel = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FF00FF")).
+				Bold(true).
+				Render("Key:   ")
+		}
+		content.WriteString(keyLabel + m.headerKeyInput.View() + "\n")
+
+		valLabel := "Value: "
+		if m.headerFocusField == 1 {
+			valLabel = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FF00FF")).
+				Bold(true).
+				Render("Value: ")
+		}
+		content.WriteString(valLabel + m.headerValInput.View() + "\n\n")
+
+		// Edit mode instructions
+		instructions := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#626262")).
+			Render("tab: switch field • enter: save • esc: cancel • ctrl+c: close")
+		content.WriteString(instructions)
+	}
+
+	formBox := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Padding(2, 4).
+		Width(m.width - 4).
+		Height(m.height - 2)
+
+	return "\n" + formBox.Render(content.String())
 }
-content.WriteString(modeStr)
-content.WriteString("\n\n")
 
-// Show existing headers in list mode
-if m.headerFormMode == headerModeList {
-if len(m.requestHeaders) > 0 {
-content.WriteString(labelStyle.Render("Headers:"))
-content.WriteString("\n")
-for i, h := range m.requestHeaders {
-prefix := "  "
-lineStyle := lipgloss.NewStyle()
-if i == m.headerSelectedIdx {
-prefix = "➤ "
-lineStyle = lipgloss.NewStyle().
-Foreground(lipgloss.Color("#FF00FF")).
-Bold(true)
-}
-headerLine := fmt.Sprintf("%s%d. %s: %s", prefix, i+1, h.Key, h.Value)
-content.WriteString(lineStyle.Render(headerLine))
-content.WriteString("\n")
-}
-} else {
-content.WriteString(lipgloss.NewStyle().
-Foreground(lipgloss.Color("#626262")).
-Italic(true).
-Render("No headers yet. Press 'a' to add one."))
-}
-content.WriteString("\n\n")
+func (m model) updateCurlImport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
 
-// List mode instructions
-instructions := lipgloss.NewStyle().
-Foreground(lipgloss.Color("#626262")).
-Render("j/k: navigate • a: add new • e/enter: edit • d/x: delete • esc/q: close")
-content.WriteString(instructions)
-} else {
-// Edit mode - show input form
-content.WriteString(labelStyle.Render("Edit Header:"))
-content.WriteString("\n\n")
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		// Close modal
+		m.showCurlImport = false
+		m.curlInput.Blur()
+		return m, nil
 
-keyLabel := "Key:   "
-if m.headerFocusField == 0 {
-keyLabel = lipgloss.NewStyle().
-Foreground(lipgloss.Color("#FF00FF")).
-Bold(true).
-Render("Key:   ")
-}
-content.WriteString(keyLabel + m.headerKeyInput.View() + "\n")
+	case "enter":
+		// Parse curl command and import
+		curlCmd := m.curlInput.Value()
+		if curlCmd != "" {
+			m.parseCurlCommand(curlCmd)
+		}
+		m.showCurlImport = false
+		m.curlInput.Blur()
+		m.curlInput.SetValue("")
+		return m, nil
 
-valLabel := "Value: "
-if m.headerFocusField == 1 {
-valLabel = lipgloss.NewStyle().
-Foreground(lipgloss.Color("#FF00FF")).
-Bold(true).
-Render("Value: ")
-}
-content.WriteString(valLabel + m.headerValInput.View() + "\n\n")
-
-// Edit mode instructions
-instructions := lipgloss.NewStyle().
-Foreground(lipgloss.Color("#626262")).
-Render("tab: switch field • enter: save • esc: cancel • ctrl+c: close")
-content.WriteString(instructions)
+	default:
+		// Pass through to text input
+		m.curlInput, cmd = m.curlInput.Update(msg)
+		return m, cmd
+	}
 }
 
-formBox := lipgloss.NewStyle().
-BorderStyle(lipgloss.RoundedBorder()).
-BorderForeground(lipgloss.Color("#7D56F4")).
-Padding(2, 4).
-Width(m.width - 4).
-Height(m.height - 2)
+func (m *model) parseCurlCommand(curlCmd string) {
+	// Remove leading "curl " and trim
+	curlCmd = strings.TrimSpace(curlCmd)
+	if strings.HasPrefix(curlCmd, "curl ") {
+		curlCmd = strings.TrimSpace(curlCmd[5:])
+	}
 
-return "\n" + formBox.Render(content.String())
+	// Parse using a simple state machine
+	inQuote := false
+	inSingleQuote := false
+	var currentArg strings.Builder
+	var args []string
+
+	for i := 0; i < len(curlCmd); i++ {
+		ch := curlCmd[i]
+
+		switch {
+		case ch == '"' && !inSingleQuote:
+			inQuote = !inQuote
+		case ch == '\'' && !inQuote:
+			inSingleQuote = !inSingleQuote
+		case ch == ' ' && !inQuote && !inSingleQuote:
+			if currentArg.Len() > 0 {
+				args = append(args, currentArg.String())
+				currentArg.Reset()
+			}
+		case ch == '\\' && i+1 < len(curlCmd):
+			// Handle escape sequences
+			i++
+			currentArg.WriteByte(curlCmd[i])
+		default:
+			currentArg.WriteByte(ch)
+		}
+	}
+
+	if currentArg.Len() > 0 {
+		args = append(args, currentArg.String())
+	}
+
+	// Parse arguments
+	method := "GET"
+	url := ""
+	headers := make(map[string]string)
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		switch {
+		case arg == "-X" || arg == "--request":
+			if i+1 < len(args) {
+				method = strings.ToUpper(args[i+1])
+				i++
+			}
+		case arg == "-H" || arg == "--header":
+			if i+1 < len(args) {
+				headerStr := args[i+1]
+				parts := strings.SplitN(headerStr, ":", 2)
+				if len(parts) == 2 {
+					headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				}
+				i++
+			}
+		case strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://"):
+			url = arg
+		case strings.HasPrefix(arg, "-"):
+			// Skip other flags we don't handle
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++ // Skip the value too
+			}
+		default:
+			// If we haven't found a URL yet and this doesn't start with -, it might be the URL
+			if url == "" && !strings.HasPrefix(arg, "-") {
+				url = arg
+			}
+		}
+	}
+
+	// Apply parsed values
+	if url != "" {
+		m.urlInput.SetValue(url)
+	}
+
+	// Set method
+	for idx, meth := range methods {
+		if meth == method {
+			m.methodIdx = idx
+			break
+		}
+	}
+
+	// Add headers
+	m.requestHeaders = []HeaderPair{}
+	for key, val := range headers {
+		m.requestHeaders = append(m.requestHeaders, HeaderPair{Key: key, Value: val})
+	}
+}
+
+func (m model) renderCurlImport() string {
+	var content strings.Builder
+
+	content.WriteString(titleStyle.Render("Import from cURL"))
+	content.WriteString("\n\n")
+
+	content.WriteString(labelStyle.Render("Paste your curl command:"))
+	content.WriteString("\n\n")
+	content.WriteString(m.curlInput.View())
+	content.WriteString("\n\n")
+
+	// Instructions
+	instructions := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#626262")).
+		Render("enter: import • esc: cancel")
+	content.WriteString(instructions)
+
+	// Example
+	content.WriteString("\n\n")
+	example := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#626262")).
+		Italic(true).
+		Render("Example: curl -X POST https://api.example.com/users -H \"Content-Type: application/json\"")
+	content.WriteString(example)
+
+	modalBox := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Padding(2, 4).
+		Width(m.width - 20).
+		Height(14)
+
+	// Center the modal
+	return "\n\n\n" + lipgloss.Place(
+		m.width, m.height,
+		lipgloss.Center, lipgloss.Center,
+		modalBox.Render(content.String()),
+	)
 }
