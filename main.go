@@ -16,16 +16,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-type httpMethod int
-
-const (
-	get httpMethod = iota
-	post
-	put
-	patch
-	deleteMethod
-)
-
 var methods = []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
 
 var (
@@ -44,11 +34,6 @@ var (
 				Bold(true).
 				Background(lipgloss.Color("#7D56F4")).
 				Foreground(lipgloss.Color("#FFFFFF"))
-
-	methodBoxStyle = lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#874BFD")).
-			Padding(1, 2)
 
 	inputBoxStyle = lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
@@ -80,10 +65,6 @@ var (
 	labelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#626262")).
 			Bold(true)
-
-	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#626262")).
-			MarginTop(1)
 )
 
 type responseView int
@@ -114,12 +95,10 @@ type model struct {
 	focus             focusArea
 	methodIdx         int
 	urlInput          textinput.Model
-	headers           string
 	body              string
 	response          string
 	responseHeaders   string
 	statusCode        string
-	submitting        bool
 	loading           bool
 	methodOpen        bool // dropdown open state
 	width             int
@@ -226,18 +205,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
-		switch msg.Type {
-		case tea.MouseWheelUp:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelUp {
 			if m.focus == focusResponse && m.response != "" {
-				m.viewport.LineUp(3)
+				m.viewport.ScrollUp(3)
 			}
 			return m, nil
-		case tea.MouseWheelDown:
+		}
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelDown {
 			if m.focus == focusResponse && m.response != "" {
-				m.viewport.LineDown(3)
+				m.viewport.ScrollDown(3)
 			}
 			return m, nil
-		case tea.MouseLeft:
+		}
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			// Click to focus - simplified click detection
 			// Since we don't track exact box positions, we use vertical position as rough guide
 			// Top area (method/url) vs bottom area (response)
@@ -273,16 +253,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showHelp = false
 				return m, nil
 			case "j", "down":
-				m.helpViewport.LineDown(1)
+				m.helpViewport.ScrollDown(1)
 				return m, nil
 			case "k", "up":
-				m.helpViewport.LineUp(1)
+				m.helpViewport.ScrollUp(1)
 				return m, nil
 			case "d":
-				m.helpViewport.HalfViewDown()
+				m.helpViewport.HalfPageDown()
 				return m, nil
 			case "u":
-				m.helpViewport.HalfViewUp()
+				m.helpViewport.HalfPageUp()
 				return m, nil
 			case "g":
 				m.helpViewport.GotoTop()
@@ -339,16 +319,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.GotoTop()
 				return m, nil
 			case "j", "down":
-				m.viewport.LineDown(1)
+				m.viewport.ScrollDown(1)
 				return m, nil
 			case "k", "up":
-				m.viewport.LineUp(1)
+				m.viewport.ScrollUp(1)
 				return m, nil
 			case "d":
-				m.viewport.HalfViewDown()
+				m.viewport.HalfPageDown()
 				return m, nil
 			case "u":
-				m.viewport.HalfViewUp()
+				m.viewport.HalfPageUp()
 				return m, nil
 			case "g":
 				m.viewport.GotoTop()
@@ -434,14 +414,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			// Tab cycles forward through all fields
 			m.methodOpen = false
-			if m.focus == focusMethod {
+			switch m.focus {
+			case focusMethod:
 				m.focus = focusURL
 				m.urlInput.Focus()
 				cmds = append(cmds, textinput.Blink)
-			} else if m.focus == focusURL {
+			case focusURL:
 				m.urlInput.Blur()
 				m.focus = focusResponse
-			} else {
+			default:
 				m.focus = focusMethod
 			}
 			return m, tea.Batch(cmds...)
@@ -449,12 +430,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			// Shift+tab cycles backward through all fields
 			m.methodOpen = false
-			if m.focus == focusMethod {
+			switch m.focus {
+			case focusMethod:
 				m.focus = focusResponse
-			} else if m.focus == focusURL {
+			case focusURL:
 				m.urlInput.Blur()
 				m.focus = focusMethod
-			} else {
+			default:
 				m.focus = focusURL
 				m.urlInput.Focus()
 				cmds = append(cmds, textinput.Blink)
@@ -505,18 +487,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
-}
-
-func updateInput(current string, msg tea.KeyMsg) string {
-	switch msg.Type {
-	case tea.KeyRunes:
-		return current + msg.String()
-	case tea.KeyBackspace, tea.KeyDelete:
-		if len(current) > 0 {
-			return current[:len(current)-1]
-		}
-	}
-	return current
 }
 
 func (m model) View() string {
@@ -755,7 +725,9 @@ func sendRequestCmd(method, url string, headers []HeaderPair, body string) tea.C
 		if err != nil {
 			return responseMsg{resp: "", headers: "", status: "", err: err}
 		}
-		defer resp.Body.Close()
+		defer func() {
+			_ = resp.Body.Close()
+		}()
 
 		// Build headers string
 		var headersBuilder strings.Builder
