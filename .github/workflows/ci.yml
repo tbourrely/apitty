@@ -58,6 +58,9 @@ jobs:
           - goos: darwin
             goarch: amd64
             output: apitty-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            output: apitty-darwin-arm64
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
