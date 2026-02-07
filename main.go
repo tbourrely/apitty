@@ -139,6 +139,7 @@ type model struct {
 	headerIsEditing   bool // true if editing existing, false if adding new
 	showCurlImport    bool // show curl import modal
 	curlInput         textinput.Model
+	helpViewport      viewport.Model
 }
 
 type HeaderPair struct {
@@ -168,6 +169,7 @@ func initialModel() model {
 	curlInput.Width = 80
 
 	vp := viewport.New(0, 0)
+	helpVp := viewport.New(0, 0)
 	vp.KeyMap = viewport.KeyMap{} // Disable default keybindings
 
 	return model{
@@ -186,6 +188,7 @@ func initialModel() model {
 		headerFormMode:    headerModeList,
 		headerFocusField:  0,
 		curlInput:         curlInput,
+		helpViewport:      helpVp,
 	}
 }
 
@@ -260,6 +263,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.loading {
+			return m, nil
+		}
+
+		// If help is showing, handle help-specific keys
+		if m.showHelp {
+			switch msg.String() {
+			case "?", "q", "esc":
+				m.showHelp = false
+				return m, nil
+			case "j", "down":
+				m.helpViewport.LineDown(1)
+				return m, nil
+			case "k", "up":
+				m.helpViewport.LineUp(1)
+				return m, nil
+			case "d":
+				m.helpViewport.HalfViewDown()
+				return m, nil
+			case "u":
+				m.helpViewport.HalfViewUp()
+				return m, nil
+			case "g":
+				m.helpViewport.GotoTop()
+				return m, nil
+			case "G":
+				m.helpViewport.GotoBottom()
+				return m, nil
+			}
 			return m, nil
 		}
 
@@ -352,7 +383,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "?":
 			// Toggle help manual
-			m.showHelp = !m.showHelp
+			if !m.showHelp {
+				// Opening help - initialize viewport
+				m.showHelp = true
+				m.helpViewport.Width = m.width - 8
+				m.helpViewport.Height = m.height - 8
+				m.helpViewport.SetContent(m.getHelpContent())
+				m.helpViewport.GotoTop()
+			} else {
+				// Closing help
+				m.showHelp = false
+			}
 			return m, nil
 
 		case "i":
@@ -621,8 +662,8 @@ func (m model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
-func (m model) renderHelp() string {
-	helpContent := `
+func (m model) getHelpContent() string {
+	return `
 ╭─────────────────────────────────────────────────────────────╮
 │                   APITTY - KEYBINDINGS                      │
 ╰─────────────────────────────────────────────────────────────╯
@@ -656,6 +697,7 @@ RESPONSE BOX (when focused)
   u         Scroll up half page
   g         Jump to top
   G         Jump to bottom
+  w         Toggle text wrapping
 
 FULLSCREEN MODE (when active)
   f         Exit fullscreen
@@ -666,9 +708,17 @@ MOUSE SUPPORT
   Scroll    Scroll the response box (when focused)
   Click     Switch focus between elements
 
+HELP PAGE NAVIGATION
+  j/k       Scroll up/down
+  d/u       Scroll half page
+  g/G       Jump to top/bottom
+  ?/q/esc   Close help
+
 Press ? to close this help
 `
+}
 
+func (m model) renderHelp() string {
 	helpBox := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#7D56F4")).
@@ -676,7 +726,11 @@ Press ? to close this help
 		Width(m.width - 4).
 		Height(m.height - 2)
 
-	return "\n" + helpBox.Render(helpContent)
+	scrollInfo := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#626262")).
+		Render(fmt.Sprintf("%.0f%%", m.helpViewport.ScrollPercent()*100))
+
+	return "\n" + helpBox.Render(m.helpViewport.View()+"\n"+scrollInfo)
 }
 
 // sendRequestCmd performs the HTTP request in a goroutine and returns a tea.Cmd
